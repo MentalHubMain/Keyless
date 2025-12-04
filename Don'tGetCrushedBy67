@@ -2,7 +2,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Window = Rayfield:CreateWindow({
    Name = "Mental Hub",
-   LoadingTitle = "Don't Get Crushed By 67",
+   LoadingTitle = "Dont Get Crushed By 67",
    LoadingSubtitle = "by Mental Hub",
    ConfigurationSaving = {
       Enabled = true,
