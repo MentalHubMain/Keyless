@@ -22,19 +22,14 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
--- [ CONSTANTS ]
-local WORLD_POSITIONS = {
-    [1] = Vector3.new(-1884.945, -54.58, 287.75),
-    [2] = Vector3.new(-2894.947, -58.5, -950.399),
-    [3] = Vector3.new(-4826.948, -58.5, -2462.399)
-}
-
+-- [ VARIABLES ]
 local Flags = {
-    AutoWinW1 = false,
-    AutoWinW2 = false,
-    AutoWinW3 = false,
+    AutoFarmSelected = false,
+    SelectedWorld = nil,
+    FarmDelay = 21, -- Set to 21s to be safe against 20s cooldown
     AutoRebirth = false,
     AutoWalkSpeed = false,
     AutoCash = false,
@@ -48,17 +43,49 @@ local Flags = {
     InfJump = false
 }
 
+-- [ DYNAMIC SCANNER ]
+-- Scans for worlds and returns a list of names for the UI and a table for logic
+local function ScanWorlds()
+    local worldData = {}
+    local worldNames = {}
+    local worldsFolder = Workspace:FindFirstChild("Worlds")
+    
+    if worldsFolder then
+        for _, worldFolder in pairs(worldsFolder:GetChildren()) do
+            -- Check if structure matches: World -> Nodes -> Win
+            local nodes = worldFolder:FindFirstChild("Nodes")
+            if nodes then
+                local winPart = nodes:FindFirstChild("Win")
+                if winPart then
+                    worldData[worldFolder.Name] = winPart
+                    table.insert(worldNames, worldFolder.Name)
+                end
+            end
+        end
+    end
+    table.sort(worldNames) -- Sort alphabetically for clean UI
+    return worldNames, worldData
+end
+
+-- Initial Scan
+local WorldNames, WorldMap = ScanWorlds()
+
 -- [ FUNCTIONS ]
-local function TeleportTo(pos)
+local function TeleportTo(cframe)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if hrp then
-        hrp.CFrame = CFrame.new(pos)
+        -- Force CFrame update
+        hrp.CFrame = cframe
+        
+        -- Velocity reset to prevent anti-cheat fling
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        
+        -- Touch simulation (Pro Method: Move slightly up to trigger TouchInterest)
         task.wait(0.1)
         if hrp then
-            -- Position adjustment for touch interest
-            hrp.CFrame = hrp.CFrame * CFrame.new(0, 5, 0) 
-            hrp.AssemblyLinearVelocity = Vector3.new(0, 5, 0)
+            hrp.CFrame = cframe * CFrame.new(0, 2, 0)
         end
     end
 end
@@ -70,7 +97,7 @@ local function StartFly()
     local human = char:FindFirstChild("Humanoid")
     if not root or not human then return end
 
-    -- Cleanup existing forces
+    -- Cleanup existing
     for _, v in pairs(root:GetChildren()) do
         if v.Name == "MentalHubFly" then v:Destroy() end
     end
@@ -94,21 +121,17 @@ local function StartFly()
             local moveDir = human.MoveDirection
             local speed = Flags.FlySpeed
             
-            -- Direction calculation relative to camera
-            local look = cam.CFrame.LookVector
-            local right = cam.CFrame.RightVector
-            
             if moveDir.Magnitude > 0 then
-                 -- Calculate velocity vector
+                 local look = cam.CFrame.LookVector
+                 local right = cam.CFrame.RightVector
                  local newVel = (moveDir.X * right + moveDir.Z * look) * speed
                  newVel = newVel + Vector3.new(0, moveDir.Y * speed, 0) 
                  
+                 -- Forward priority for mobile/controller
                  if moveDir.Magnitude > 0 then
-                    newVel = cam.CFrame.LookVector * speed
+                    bv.Velocity = cam.CFrame.LookVector * speed
                  end
-
                  bg.CFrame = cam.CFrame
-                 bv.Velocity = cam.CFrame.LookVector * speed
             else
                  bv.Velocity = Vector3.zero
             end
@@ -118,8 +141,8 @@ local function StartFly()
         end
         
         if human then human.PlatformStand = false end
-        bv:Destroy()
-        bg:Destroy()
+        if bv then bv:Destroy() end
+        if bg then bg:Destroy() end
     end)
 end
 
@@ -131,61 +154,71 @@ local MiscTab = Window:CreateTab("Misc", 4483362458)
 
 -- [ MAIN TAB ]
 
-MainTab:CreateSection("Auto Wins")
+MainTab:CreateSection("Target Farming")
+
+local WorldDropdown = MainTab:CreateDropdown({
+   Name = "Select Best World",
+   Options = WorldNames,
+   CurrentOption = {WorldNames[1] or "None"},
+   MultipleOptions = false,
+   Flag = "SelectedWorld",
+   Callback = function(Option)
+        -- Option returns table in Rayfield
+        Flags.SelectedWorld = Option[1]
+   end,
+})
+
+MainTab:CreateButton({
+   Name = "Refresh World List",
+   Callback = function()
+        local newNames, newMap = ScanWorlds()
+        WorldMap = newMap -- Update the logic map
+        WorldDropdown:Refresh(newNames, true) -- Update the UI
+   end,
+})
 
 MainTab:CreateToggle({
-   Name = "Auto Win World 1",
+   Name = "Auto Farm Selected World",
    CurrentValue = false,
-   Flag = "AutoWinW1",
+   Flag = "AutoFarmSelected",
    Callback = function(Value)
-        Flags.AutoWinW1 = Value
+        Flags.AutoFarmSelected = Value
         if Value then
-            -- Mutual exclusion
-            if Flags.AutoWinW2 then Flags.AutoWinW2 = false end
-            if Flags.AutoWinW3 then Flags.AutoWinW3 = false end
-            
             task.spawn(function()
-                while Flags.AutoWinW1 do
-                    TeleportTo(WORLD_POSITIONS[1])
-                    task.wait(20)
+                while Flags.AutoFarmSelected do
+                    if not Flags.SelectedWorld then
+                         Rayfield:Notify({Title = "Warning", Content = "Select a world first!", Duration = 3})
+                         Flags.AutoFarmSelected = false
+                         break
+                    end
+                    
+                    local targetPart = WorldMap[Flags.SelectedWorld]
+                    
+                    if targetPart then
+                        TeleportTo(targetPart.CFrame)
+                        -- Wait for the win cooldown
+                        task.wait(Flags.FarmDelay)
+                    else
+                         Rayfield:Notify({Title = "Error", Content = "Selected world not found (try Refresh)", Duration = 3})
+                         Flags.AutoFarmSelected = false
+                         break
+                    end
                 end
             end)
         end
    end,
 })
 
-MainTab:CreateToggle({
-   Name = "Auto Win World 2",
-   CurrentValue = false,
-   Flag = "AutoWinW2",
-   Callback = function(Value)
-        Flags.AutoWinW2 = Value
-        if Value then
-            task.spawn(function()
-                while Flags.AutoWinW2 do
-                    TeleportTo(WORLD_POSITIONS[2])
-                    task.wait(20)
-                end
-            end)
-        end
-   end,
-})
-
-MainTab:CreateToggle({
-   Name = "Auto Win World 3",
-   CurrentValue = false,
-   Flag = "AutoWinW3",
-   Callback = function(Value)
-        Flags.AutoWinW3 = Value
-        if Value then
-            task.spawn(function()
-                while Flags.AutoWinW3 do
-                    TeleportTo(WORLD_POSITIONS[3])
-                    task.wait(20)
-                end
-            end)
-        end
-   end,
+MainTab:CreateSlider({
+    Name = "Farm Loop Delay (Seconds)",
+    Range = {1, 60},
+    Increment = 1,
+    Suffix = "s",
+    CurrentValue = 21,
+    Flag = "FarmDelay",
+    Callback = function(Value)
+        Flags.FarmDelay = Value
+    end,
 })
 
 MainTab:CreateSection("Rebirth")
@@ -200,7 +233,11 @@ MainTab:CreateToggle({
             task.spawn(function()
                 while Flags.AutoRebirth do
                     pcall(function()
-                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("rebirthReq"):FireServer()
+                        -- Ensure remote exists before firing to prevent errors
+                        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+                        if remotes and remotes:FindFirstChild("rebirthReq") then
+                            remotes.rebirthReq:FireServer()
+                        end
                     end)
                     task.wait(5)
                 end
@@ -281,23 +318,27 @@ PlayerTab:CreateToggle({
 
 ShopTab:CreateSection("Upgrades")
 
+local function AutoBuy(upgradeName)
+    task.spawn(function()
+        while Flags["Auto"..upgradeName] do
+            pcall(function()
+                local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+                if remotes and remotes:FindFirstChild("CashShop") then
+                     remotes.CashShop:InvokeServer("Upgrade", upgradeName)
+                end
+            end)
+            task.wait(0.5)
+        end
+    end)
+end
+
 ShopTab:CreateToggle({
    Name = "Auto Buy WalkSpeed",
    CurrentValue = false,
    Flag = "AutoWalkSpeed",
    Callback = function(Value)
         Flags.AutoWalkSpeed = Value
-        if Value then
-            task.spawn(function()
-                while Flags.AutoWalkSpeed do
-                    pcall(function()
-                        local args = {"Upgrade", "WalkSpeed"}
-                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("CashShop"):InvokeServer(unpack(args))
-                    end)
-                    task.wait(0.5)
-                end
-            end)
-        end
+        if Value then AutoBuy("WalkSpeed") end
    end,
 })
 
@@ -307,17 +348,7 @@ ShopTab:CreateToggle({
    Flag = "AutoCash",
    Callback = function(Value)
         Flags.AutoCash = Value
-        if Value then
-            task.spawn(function()
-                while Flags.AutoCash do
-                    pcall(function()
-                        local args = {"Upgrade", "Cash"}
-                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("CashShop"):InvokeServer(unpack(args))
-                    end)
-                    task.wait(0.5)
-                end
-            end)
-        end
+        if Value then AutoBuy("Cash") end
    end,
 })
 
@@ -327,17 +358,7 @@ ShopTab:CreateToggle({
    Flag = "AutoHealth",
    Callback = function(Value)
         Flags.AutoHealth = Value
-        if Value then
-            task.spawn(function()
-                while Flags.AutoHealth do
-                    pcall(function()
-                        local args = {"Upgrade", "Health"}
-                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("CashShop"):InvokeServer(unpack(args))
-                    end)
-                    task.wait(0.5)
-                end
-            end)
-        end
+        if Value then AutoBuy("Health") end
    end,
 })
 
@@ -399,7 +420,7 @@ end)
 
 Rayfield:Notify({
    Title = "Mental Hub Loaded",
-   Content = "Script Initialized",
+   Content = "Select a World to Farm",
    Duration = 5,
    Image = 4483362458,
 })
